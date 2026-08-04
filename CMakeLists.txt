@@ -72,6 +72,9 @@ if(HEX_TSAN)
   target_link_options(test_alphabeta PRIVATE -fsanitize=thread)
 endif()
 
+add_executable(play tools/play.cpp)
+target_link_libraries(play PRIVATE hex_core)
+
 add_executable(bench_board bench/bench_board.cpp)
 target_link_libraries(bench_board PRIVATE hex_core)
 

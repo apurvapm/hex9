@@ -141,6 +141,36 @@ undervalues positions a strong Hex player would read as already won. Shannon's
 electrical-resistance evaluation and the two-distance metric are the natural
 upgrades.
 
+## Playing against it
+
+```
+cmake -B build && cmake --build build -j
+./build/play                                    # 9x9 against MCTS
+./build/play --opponent=alphabeta --depth=4
+./build/play --size=7 --sims=50000 --colour=blue --swap
+```
+
+Moves use Hex notation — a column letter then a row number, such as `e5`. Also
+accepted: `swap`, `hint`, `undo`, `quit`.
+
+```
+     a b c d e f g h i
+  1  . . . . . . . . . 1
+   2  . . . . . . . . . 2
+    3  . . . . . . . . . 3
+     4  . . . . B . . . . 4
+      5  . . . . R . . . . 5
+       6  . . . . . . . . . 6
+        7  . . . . . . . . . 7
+         8  . . . . . . . . . 8
+          9  . . . . . . . . . 9
+             a b c d e f g h i
+```
+
+Each row is indented one space further than the last, which is what makes the
+six-neighbour adjacency legible: the cell below-left and below-right of a stone
+are its neighbours, the cell directly below is not.
+
 ## Baseline throughput
 
 Uniform-random playouts, single core, `-O3 -march=native`:
@@ -162,8 +192,8 @@ Design decisions and their rationale are in [docs/DESIGN.md](docs/DESIGN.md).
 - [x] Phase 1a — plain MCTS with UCT and random rollouts, verified against the
       exhaustive solver
 - [x] Phase 1b — alpha-beta baseline with a connection-distance evaluation
-- [ ] Phase 1c — terminal CLI; 180° rotational symmetry in the transposition
-      table
+- [x] Phase 1c — terminal CLI
+- [ ] Phase 1d — 180° rotational symmetry in the transposition table
 - [ ] Phase 2 — self-play loop validated on 5×5 against exhaustive ground truth
 - [ ] Phase 3 — parallel self-play: thread pool, bounded MPMC queue with
       backpressure, virtual-loss tree search, clean under TSan. Scaling curve
