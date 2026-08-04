@@ -72,6 +72,20 @@ if(HEX_TSAN)
   target_link_options(test_alphabeta PRIVATE -fsanitize=thread)
 endif()
 
+add_executable(test_puct tests/test_puct.cpp)
+target_link_libraries(test_puct PRIVATE hex_core)
+add_test(NAME puct COMMAND test_puct)
+
+if(HEX_SANITIZE)
+  target_compile_options(test_puct PRIVATE -fsanitize=address,undefined -g -O1)
+  target_link_options(test_puct PRIVATE -fsanitize=address,undefined)
+endif()
+
+if(HEX_TSAN)
+  target_compile_options(test_puct PRIVATE -fsanitize=thread -g -O1)
+  target_link_options(test_puct PRIVATE -fsanitize=thread)
+endif()
+
 add_executable(play tools/play.cpp)
 target_link_libraries(play PRIVATE hex_core)
 

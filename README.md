@@ -1,6 +1,6 @@
 # hex9
 
-[![ci](https://github.com/YOURUSER/hex9/actions/workflows/ci.yml/badge.svg)](https://github.com/YOURUSER/hex9/actions/workflows/ci.yml)
+[![ci](https://github.com/apurvapm/hex9/actions/workflows/ci.yml/badge.svg)](https://github.com/apurvapm/hex9/actions/workflows/ci.yml)
 
 An AlphaZero-style agent for 9×9 Hex, trained offline and served entirely in the
 browser. C++ engine compiled to WebAssembly, policy/value network exported to
@@ -141,6 +141,26 @@ undervalues positions a strong Hex player would read as already won. Shannon's
 electrical-resistance evaluation and the two-distance metric are the natural
 upgrades.
 
+**PUCT** — the AlphaZero variant, where an evaluator supplies move priors and a
+position value in place of rollouts. The evaluator is a template parameter, so
+the identical tree code runs against a rollout, a heuristic, or a neural network.
+Includes Dirichlet root noise and temperature sampling for self-play, and exposes
+the root visit distribution as the policy training target.
+
+Every sampler behind that — uniform, normal, gamma, Dirichlet — is hand-rolled,
+because the `<random>` distribution classes are implementation-defined and would
+break parity between the native and WebAssembly builds. Each is verified against
+its analytic mean and variance.
+
+How much search each evaluator needs to solve the same 4×4 opening:
+
+```
+heuristic @  2k: 8/8   rollout @  2k: 5/8   rollout @ 50k: 8/8
+```
+
+A structural evaluator reaches with 2,000 simulations what rollouts need 50,000
+to match — a 25× difference in search budget from evaluation quality alone.
+
 ## Playing against it
 
 ```
@@ -194,6 +214,8 @@ Design decisions and their rationale are in [docs/DESIGN.md](docs/DESIGN.md).
 - [x] Phase 1b — alpha-beta baseline with a connection-distance evaluation
 - [x] Phase 1c — terminal CLI
 - [ ] Phase 1d — 180° rotational symmetry in the transposition table
+- [x] Phase 2a — PUCT search with pluggable evaluator, root noise, temperature
+- [ ] Phase 2b — network, self-play driver, training loop validated on 5×5
 - [ ] Phase 2 — self-play loop validated on 5×5 against exhaustive ground truth
 - [ ] Phase 3 — parallel self-play: thread pool, bounded MPMC queue with
       backpressure, virtual-loss tree search, clean under TSan. Scaling curve

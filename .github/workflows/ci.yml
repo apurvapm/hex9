@@ -27,6 +27,7 @@ jobs:
           ./build/test_board
           ./build/test_mcts
           ./build/test_alphabeta
+          ./build/test_puct
 
       - name: Benchmark
         run: ./build/bench_board
@@ -48,6 +49,7 @@ jobs:
           ./build-asan/test_board
           ./build-asan/test_mcts
           ./build-asan/test_alphabeta
+          ./build-asan/test_puct
         env:
           UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
 
