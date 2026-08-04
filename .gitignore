@@ -1,0 +1,10 @@
+build/
+build-*/
+dist/
+*.o
+*.onnx
+checkpoints/
+selfplay-data/
+.DS_Store
+compile_commands.json
+.cache/

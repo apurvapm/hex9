@@ -1,0 +1,91 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: build and test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build -j
+
+      - name: Test
+        run: |
+          ./build/test_board
+          ./build/test_mcts
+
+      - name: Benchmark
+        run: ./build/bench_board
+
+  sanitizers:
+    name: asan and ubsan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -B build-asan -DHEX_SANITIZE=ON -DCMAKE_BUILD_TYPE=Debug
+
+      - name: Build
+        run: cmake --build build-asan -j
+
+      - name: Test
+        run: |
+          ./build-asan/test_board
+          ./build-asan/test_mcts
+        env:
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+
+  # Enable once the threaded self-play driver exists.
+  #
+  # thread-sanitizer:
+  #   name: tsan
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - run: cmake -B build-tsan -DHEX_TSAN=ON -DCMAKE_BUILD_TYPE=Debug
+  #     - run: cmake --build build-tsan -j
+  #     - run: ./build-tsan/selfplay --threads=8 --games=200 --sims=64
+
+  # Builds the WASM bundle and publishes it to GitHub Pages at
+  # https://<owner>.github.io/hex9/. Requires
+  # Settings -> Pages -> Source: GitHub Actions.
+  #
+  # deploy:
+  #   name: build wasm and deploy
+  #   needs: [test, sanitizers]
+  #   if: github.ref == 'refs/heads/main'
+  #   runs-on: ubuntu-latest
+  #   permissions:
+  #     pages: write
+  #     id-token: write
+  #   environment:
+  #     name: github-pages
+  #     url: ${{ steps.deployment.outputs.page_url }}
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - uses: mymindstorm/setup-emsdk@v14
+  #       with:
+  #         version: 3.1.64
+  #         actions-cache-folder: emsdk-cache
+  #     - run: emcmake cmake -B build-wasm -DCMAKE_BUILD_TYPE=Release
+  #     - run: cmake --build build-wasm -j
+  #     - run: cp -r web/* build-wasm/hex_engine.js build-wasm/hex_engine.wasm dist/
+  #     - uses: actions/upload-pages-artifact@v3
+  #       with:
+  #         path: dist
+  #     - id: deployment
+  #       uses: actions/deploy-pages@v4
