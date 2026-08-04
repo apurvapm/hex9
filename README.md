@@ -1,6 +1,6 @@
 # hex9
 
-[![ci](https://github.com/YOURUSER/hex9/actions/workflows/ci.yml/badge.svg)](https://github.com/YOURUSER/hex9/actions/workflows/ci.yml)
+[![ci](https://github.com/apurvapm/hex9/actions/workflows/ci.yml/badge.svg)](https://github.com/YOURUSER/hex9/actions/workflows/ci.yml)
 
 An AlphaZero-style agent for 9×9 Hex, trained offline and served entirely in the
 browser. C++ engine compiled to WebAssembly, policy/value network exported to
