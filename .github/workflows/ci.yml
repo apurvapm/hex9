@@ -28,9 +28,25 @@ jobs:
           ./build/test_mcts
           ./build/test_alphabeta
           ./build/test_puct
+          ./build/test_encoding training/encoding_fixture.txt
 
       - name: Benchmark
         run: ./build/bench_board
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Python tests
+        run: |
+          pip install -r training/requirements.txt
+          cd training && python -m pytest -q
+
+      - name: Self-play smoke test
+        run: |
+          ./build/selfplay --size=5 --heuristic --games=20 --sims=50 --out=smoke.bin
+          cd training && python -m records_smoke ../smoke.bin
 
   sanitizers:
     name: asan and ubsan
@@ -50,6 +66,7 @@ jobs:
           ./build-asan/test_mcts
           ./build-asan/test_alphabeta
           ./build-asan/test_puct
+          ./build-asan/test_encoding
         env:
           UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
 
@@ -65,7 +82,7 @@ jobs:
   #     - run: ./build-tsan/selfplay --threads=8 --games=200 --sims=64
 
   # Builds the WASM bundle and publishes it to GitHub Pages at
-  # https://<owner>.github.io/hex9/. Requires
+  # https://apurvapm.github.io/hex9/. Requires
   # Settings -> Pages -> Source: GitHub Actions.
   #
   # deploy:

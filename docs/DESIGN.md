@@ -75,33 +75,57 @@ plays like garbage. Small-board ground truth is the only reliable defence.
 
 ## Parallel self-play
 
-Self-play generation is the throughput bottleneck and is where the project
-demonstrates concurrent systems work, so the following are requirements rather
-than later optimisation.
+Training runs on CPU. There is no GPU anywhere in the project, which keeps every
+number in the README reproducible by anyone who clones the repository.
 
-- A thread pool over hundreds of concurrent self-play games. Workers descend
-  their own trees and emit unevaluated leaf positions.
-- A bounded multi-producer, multi-consumer queue feeding a single batching
-  evaluator, with backpressure when the GPU falls behind. Workers block rather
-  than let the queue grow without limit.
-- Batch formation on a deadline: the evaluator waits a bounded time to fill a
-  batch, then fires with whatever it has. Batch size and wait window are exposed
-  as knobs, and the throughput-versus-latency curve across them is the
-  interesting result rather than any single number.
-- Virtual loss in tree-parallel search, so concurrent workers do not all descend
-  the same path. Applied on selection, reverted on backup.
-- Relaxed atomics for visit counts and value sums, with the memory-ordering
-  choice documented.
-- A comparison of tree-parallel against root-parallel and leaf-parallel on the
-  same hardware.
+Measured single-core ONNX Runtime throughput for the 9×9 network:
 
-Deliverables are a scaling curve to at least 32 threads, a contention analysis,
-and a note on the bugs found along the way. ThreadSanitizer runs in CI over a
-reduced self-play workload, and a clean run is part of the definition of done.
+```
+full  (464k params)  batch=1: 1,697   batch=32: 1,940   batch=128: 2,040 evals/sec
+light (187k params)  batch=1: 4,226   batch=32: 4,497   batch=128: 4,810 evals/sec
+```
+
+Batching buys about 20% across a 128× range. That is the opposite of the GPU
+case, where a single 9×9 position leaves the device almost idle and batching is
+worth an order of magnitude or more. A CPU core is already saturated by one
+convolution, so batching only amortises call overhead.
+
+This determines the architecture. Rather than a bounded queue feeding one
+batching evaluator — which exists to keep a hungry accelerator fed — self-play
+runs as independent workers, each owning its own single-threaded ORT session.
+That parallelises close to linearly and removes the queue entirely.
+
+Requirements:
+
+- A thread pool over independent self-play games, one ORT session per worker
+  with `intra_op_threads = 1`. Per-worker sessions avoid the contention that
+  arises when several threads share one session's internal thread pool.
+- A comparison against the alternative: fewer workers, each with a
+  multi-threaded session. Report which wins and why. The expectation is that
+  per-worker sessions win, because ORT's intra-op parallelism scales worse
+  across small convolutions than embarrassingly parallel games do.
+- Batch-size scaling curves, measured rather than assumed. The flat CPU curve
+  above is a result worth reporting alongside the reason for it.
+- Virtual loss where workers share a tree, applied on selection and reverted on
+  backup. Relaxed atomics for visit counts and value sums, with the
+  memory-ordering choice documented.
+- Lock-free or fine-grained statistics on shared nodes. Compare tree-parallel
+  against root-parallel and leaf-parallel on the same hardware.
+
+Deliverables are a scaling curve to the machine's core count, a contention
+analysis, and a note on the bugs found along the way. ThreadSanitizer runs in CI
+over a reduced self-play workload, and a clean run is part of the definition of
+done.
 
 Threaded self-play is not reproducible, so a `--threads=1` path stays bit-for-bit
 deterministic given a seed, with each game seeded from `(run_seed, game_index)`
-rather than from a shared generator.
+rather than from a shared generator. The single-threaded driver already does
+this.
+
+Budget on a modern laptop, at roughly 50k evaluations per second across all
+cores: the 5×5 validation gate is about twenty minutes, and a 9×9 agent strong
+enough to beat a casual player is an overnight run. Superhuman play is not the
+target; the demo needs an opponent that is fun to lose to.
 
 ## Browser demo
 

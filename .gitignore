@@ -1,10 +1,49 @@
+# Build output
 build/
 build-*/
 dist/
+
+# Compiled objects
 *.o
+*.a
+*.so
+*.dylib
+
+# Python environments — never commit these. A PyTorch venv holds a 322 MB
+# dylib, well past GitHub's 100 MB per-file limit.
+.venv/
+venv/
+env/
+ENV/
+
+# Python caches
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.egg-info/
+
+# Model artefacts and training output
 *.onnx
+*.onnx.data
+*.pt
+*.pth
 checkpoints/
+runs/
+
+# Self-play shards. training/encoding_fixture.txt is a committed golden
+# fixture and is deliberately not matched here.
+*.bin
 selfplay-data/
+
+# Third-party SDKs extracted in place
+onnxruntime-*/
+emsdk/
+
+# Editor and OS
 .DS_Store
+.idea/
+.vscode/
 compile_commands.json
 .cache/

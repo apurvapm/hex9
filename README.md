@@ -1,6 +1,6 @@
 # hex9
 
-[![ci](https://github.com/apurvapm/hex9/actions/workflows/ci.yml/badge.svg)](https://github.com/apurvapm/hex9/actions/workflows/ci.yml)
+[![ci](https://github.com/YOURUSER/hex9/actions/workflows/ci.yml/badge.svg)](https://github.com/YOURUSER/hex9/actions/workflows/ci.yml)
 
 An AlphaZero-style agent for 9×9 Hex, trained offline and served entirely in the
 browser. C++ engine compiled to WebAssembly, policy/value network exported to
@@ -161,6 +161,101 @@ heuristic @  2k: 8/8   rollout @  2k: 5/8   rollout @ 50k: 8/8
 A structural evaluator reaches with 2,000 simulations what rollouts need 50,000
 to match — a 25× difference in search budget from evaluation quality alone.
 
+## Position encoding
+
+Hex is not symmetric between players the way Go or chess are — Red connects top
+to bottom, Blue connects left to right — so a position cannot be normalised by
+swapping colours. But transposing `(r, c) → (c, r)` maps Red's goal onto Blue's,
+which is the same isomorphism the swap rule is built on.
+
+The encoder uses it to canonicalise: every position is presented from the
+perspective of the player to move, oriented onto the top-bottom axis. The network
+learns one goal direction instead of two, and a position and its mirror share an
+evaluation exactly rather than approximately.
+
+Three planes: the mover's stones, the opponent's stones, and a plane set when
+swap is legal. That third plane is not redundant — after a swap the board holds
+one stone at ply 2, which is indistinguishable in the first two planes from the
+one-stone position at ply 1 where swap is still available.
+
+The C++ driver and the Python trainer must produce byte-identical tensors, and a
+mismatch is silent: loss falls smoothly while the network learns from misaligned
+inputs. So `tests/test_encoding.cpp` writes a golden fixture of positions with
+checksums over the resulting tensors, and `training/test_encoding.py` asserts the
+Python encoder reproduces every one. Both run in CI.
+
+## Network
+
+A small residual tower with separate policy and value heads. The policy is
+`N² + 1` wide — every cell plus the swap action — and the value is squashed to
+`[-1, 1]` from the mover's perspective.
+
+The Hex-specific choice is the convolution kernel. A cell on the rhombus has six
+neighbours, at offsets `(-1,0) (-1,+1) (0,-1) (0,+1) (+1,-1) (+1,0)`. A standard
+3×3 kernel spans eight, so two of its taps sit on cells that are not adjacent at
+all. Those two weights are masked to zero, giving the network the real board
+topology rather than asking it to learn that two of its inputs are meaningless.
+The mask is a flag, so the choice can be ablated.
+
+```
+HexNet(board=9, channels=64, blocks=6, masked=True, params=464,637)
+wrote hex9.onnx (1.78 MB)
+onnx matches pytorch: policy max diff 7.82e-08, value max diff 4.47e-08
+```
+
+Export verification is not optional. A graph that silently changes behaviour —
+BatchNorm left in training mode, an operator that folds differently — loads fine
+in the browser and plays badly with nothing in the logs to explain it. The
+exporter compares ONNX Runtime against PyTorch across several batch sizes before
+writing, and refuses to emit a model whose weights spilled into a sidecar file,
+since that deploys cleanly from disk and fails over HTTP.
+
+## Training compute
+
+There is no GPU in this project. Everything trains on CPU, so every number below
+is reproducible by anyone who clones the repository.
+
+Single-core ONNX Runtime throughput for the 9×9 network:
+
+```
+full  (464k params)  batch=1: 1,697   batch=32: 1,940   batch=128: 2,040 evals/sec
+light (187k params)  batch=1: 4,226   batch=32: 4,497   batch=128: 4,810 evals/sec
+```
+
+Batching buys roughly 20% across a 128× range — the opposite of the GPU case,
+where a single 9×9 position leaves the device nearly idle and batching is worth
+an order of magnitude. A CPU core is already saturated by one convolution, so
+batching only amortises call overhead.
+
+That result determines the parallel design: independent self-play workers each
+owning a single-threaded session, rather than a queue feeding one batching
+evaluator. The batching machinery exists to keep a hungry accelerator fed, and
+there is no accelerator here.
+
+## Self-play
+
+`tools/selfplay.cpp` plays games with PUCT and writes training records.
+
+```
+./build/selfplay --size=5 --heuristic --games=100 --sims=100 --out=shard.bin
+./build/selfplay --size=5 --model=tiny.onnx --games=50 --sims=200 --out=shard.bin
+```
+
+ONNX Runtime is optional: pass `-DONNXRUNTIME_ROOT=<path>` to CMake to enable
+network play. Without it the driver still runs against the connection-distance
+heuristic, which is what the record tests use, so CI needs no extra dependency.
+
+Records store move sequences plus per-move visit counts rather than encoded
+tensors. Replaying is cheap, shards stay roughly twenty times smaller, and — the
+real reason — the trainer reaches its inputs through exactly the same replay and
+encode path that the golden fixture already pins. There is no second encoding to
+drift.
+
+The reader recomputes every game's winner with a flood fill. The engine derives
+it incrementally through a union-find, so agreement between two independent
+implementations is real evidence a shard is intact, rather than a value head
+that quietly refuses to converge three days later.
+
 ## Playing against it
 
 ```
@@ -215,7 +310,11 @@ Design decisions and their rationale are in [docs/DESIGN.md](docs/DESIGN.md).
 - [x] Phase 1c — terminal CLI
 - [ ] Phase 1d — 180° rotational symmetry in the transposition table
 - [x] Phase 2a — PUCT search with pluggable evaluator, root noise, temperature
-- [ ] Phase 2b — network, self-play driver, training loop validated on 5×5
+- [x] Phase 2b — canonical position encoding, verified across C++ and Python
+- [x] Phase 2c — policy/value network with hex-masked convolutions, verified
+      ONNX export
+- [x] Phase 2d — self-play driver, record format, cross-validated reader
+- [ ] Phase 2e — training loop and the 5×5 gate against perfect play
 - [ ] Phase 2 — self-play loop validated on 5×5 against exhaustive ground truth
 - [ ] Phase 3 — parallel self-play: thread pool, bounded MPMC queue with
       backpressure, virtual-loss tree search, clean under TSan. Scaling curve

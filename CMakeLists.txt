@@ -72,6 +72,15 @@ if(HEX_TSAN)
   target_link_options(test_alphabeta PRIVATE -fsanitize=thread)
 endif()
 
+add_executable(test_encoding tests/test_encoding.cpp)
+target_link_libraries(test_encoding PRIVATE hex_core)
+add_test(NAME encoding COMMAND test_encoding)
+
+if(HEX_SANITIZE)
+  target_compile_options(test_encoding PRIVATE -fsanitize=address,undefined -g -O1)
+  target_link_options(test_encoding PRIVATE -fsanitize=address,undefined)
+endif()
+
 add_executable(test_puct tests/test_puct.cpp)
 target_link_libraries(test_puct PRIVATE hex_core)
 add_test(NAME puct COMMAND test_puct)
@@ -88,6 +97,26 @@ endif()
 
 add_executable(play tools/play.cpp)
 target_link_libraries(play PRIVATE hex_core)
+
+add_executable(selfplay tools/selfplay.cpp)
+target_link_libraries(selfplay PRIVATE hex_core)
+
+# ONNX Runtime is optional. Without it the driver still runs in --heuristic
+# mode, which is what the Python record tests use, so CI needs no extra
+# dependency. Point ONNXRUNTIME_ROOT at an extracted release to enable it.
+set(ONNXRUNTIME_ROOT "" CACHE PATH "Path to an ONNX Runtime C++ distribution")
+if(ONNXRUNTIME_ROOT)
+  target_compile_definitions(selfplay PRIVATE HEX_WITH_ONNX)
+  target_include_directories(selfplay PRIVATE ${ONNXRUNTIME_ROOT}/include)
+  target_link_directories(selfplay PRIVATE ${ONNXRUNTIME_ROOT}/lib)
+  target_link_libraries(selfplay PRIVATE onnxruntime)
+  set_target_properties(selfplay PROPERTIES
+    BUILD_RPATH ${ONNXRUNTIME_ROOT}/lib
+    INSTALL_RPATH ${ONNXRUNTIME_ROOT}/lib)
+  message(STATUS "selfplay: ONNX Runtime enabled at ${ONNXRUNTIME_ROOT}")
+else()
+  message(STATUS "selfplay: building without ONNX Runtime (--heuristic only)")
+endif()
 
 add_executable(bench_board bench/bench_board.cpp)
 target_link_libraries(bench_board PRIVATE hex_core)
