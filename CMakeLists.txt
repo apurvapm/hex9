@@ -58,6 +58,20 @@ if(HEX_TSAN)
   target_link_options(test_mcts PRIVATE -fsanitize=thread)
 endif()
 
+add_executable(test_alphabeta tests/test_alphabeta.cpp)
+target_link_libraries(test_alphabeta PRIVATE hex_core)
+add_test(NAME alphabeta COMMAND test_alphabeta)
+
+if(HEX_SANITIZE)
+  target_compile_options(test_alphabeta PRIVATE -fsanitize=address,undefined -g -O1)
+  target_link_options(test_alphabeta PRIVATE -fsanitize=address,undefined)
+endif()
+
+if(HEX_TSAN)
+  target_compile_options(test_alphabeta PRIVATE -fsanitize=thread -g -O1)
+  target_link_options(test_alphabeta PRIVATE -fsanitize=thread)
+endif()
+
 add_executable(bench_board bench/bench_board.cpp)
 target_link_libraries(bench_board PRIVATE hex_core)
 

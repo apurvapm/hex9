@@ -26,6 +26,7 @@ jobs:
         run: |
           ./build/test_board
           ./build/test_mcts
+          ./build/test_alphabeta
 
       - name: Benchmark
         run: ./build/bench_board
@@ -46,6 +47,7 @@ jobs:
         run: |
           ./build-asan/test_board
           ./build-asan/test_mcts
+          ./build-asan/test_alphabeta
         env:
           UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
 

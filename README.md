@@ -1,6 +1,6 @@
 # hex9
 
-[![ci](https://github.com/apurvapm/hex9/actions/workflows/ci.yml/badge.svg)](https://github.com/YOURUSER/hex9/actions/workflows/ci.yml)
+[![ci](https://github.com/YOURUSER/hex9/actions/workflows/ci.yml/badge.svg)](https://github.com/YOURUSER/hex9/actions/workflows/ci.yml)
 
 An AlphaZero-style agent for 9×9 Hex, trained offline and served entirely in the
 browser. C++ engine compiled to WebAssembly, policy/value network exported to
@@ -100,6 +100,47 @@ The small-board solves are ground truth, not a smoke test: Hex is a first-player
 win on every N×N board by a strategy-stealing argument, so a solver that
 disagrees has a bug in the rules, not a weak evaluation.
 
+## Search
+
+Two engines share the board core.
+
+**MCTS** — UCT selection with uniform-random rollouts, arena-allocated nodes,
+make/unmake rather than per-node board copies. Verified against the exhaustive
+solver: on 4×4, where only 4 of 16 openings win, it selects a provably winning
+move on 8 of 8 seeds.
+
+**Alpha-beta** — negamax with a transposition table, iterative deepening, and
+centre-first move ordering. It exists to be a fixed yardstick that never changes,
+so agents from any later phase can be measured against a constant.
+
+Hex has no material to count, so the evaluation is structural: the minimum number
+of additional stones a player needs to complete a connection, where own stones
+cost nothing to traverse, empty cells cost one, and opponent stones block. The
+only weights are 0 and 1, so it is a deque-based 0-1 BFS rather than a Dijkstra.
+
+Searching 4×4 to full depth reproduces the exhaustive solver's answer in
+**147,873 nodes against the raw solver's 11,203,672** — a 76× reduction from
+pruning, transpositions, and ordering.
+
+Two measured results:
+
+```
+depth 4 beat depth 1 in 24/24 paired games (100%)
+depth-4 alpha-beta won 19/20 against 1000-sim MCTS (95%)
+```
+
+The second is the more interesting one. Random rollouts are a poor value
+estimator in Hex because the game is decided by connectivity structure, and
+uniform-random play destroys exactly that signal — so a shallow search with a
+structural evaluation outplays a far larger rollout budget. This is the concrete
+argument for replacing rollouts with a learned value head rather than simply
+buying more simulations.
+
+The evaluation is deliberately simple and does not understand bridges, so it
+undervalues positions a strong Hex player would read as already won. Shannon's
+electrical-resistance evaluation and the two-distance metric are the natural
+upgrades.
+
 ## Baseline throughput
 
 Uniform-random playouts, single core, `-O3 -march=native`:
@@ -120,7 +161,9 @@ Design decisions and their rationale are in [docs/DESIGN.md](docs/DESIGN.md).
 - [x] Phase 0 — game core, rollback DSU, Zobrist, verification
 - [x] Phase 1a — plain MCTS with UCT and random rollouts, verified against the
       exhaustive solver
-- [ ] Phase 1b — alpha-beta baseline opponent; terminal CLI
+- [x] Phase 1b — alpha-beta baseline with a connection-distance evaluation
+- [ ] Phase 1c — terminal CLI; 180° rotational symmetry in the transposition
+      table
 - [ ] Phase 2 — self-play loop validated on 5×5 against exhaustive ground truth
 - [ ] Phase 3 — parallel self-play: thread pool, bounded MPMC queue with
       backpressure, virtual-loss tree search, clean under TSan. Scaling curve
