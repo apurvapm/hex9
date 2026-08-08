@@ -28,10 +28,21 @@ jobs:
           ./build/test_mcts
           ./build/test_alphabeta
           ./build/test_puct
+          ./build/test_parallel
           ./build/test_encoding training/encoding_fixture.txt
 
       - name: Benchmark
         run: ./build/bench_board
+
+      # The fixture is fully deterministic: a seeded mt19937_64 with a
+      # hand-rolled range reduction, and a solver whose traversal order comes
+      # from the dense legal-move array. Regenerating it on a different host and
+      # finding a diff means the random stream drifted between toolchains, which
+      # is the failure the pinned check counts exist to catch elsewhere.
+      - name: Gate fixture is reproducible
+        run: |
+          ./build/gate --out=/tmp/gate_fixture.txt
+          diff /tmp/gate_fixture.txt training/gate_fixture.txt
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -47,6 +58,107 @@ jobs:
         run: |
           ./build/selfplay --size=5 --heuristic --games=20 --sims=50 --out=smoke.bin
           cd training && python -m records_smoke ../smoke.bin
+
+      # test_parallel covers reproducibility across thread counts and block sizes
+      # in memory, where a failure names the game that diverged. This step checks
+      # the one thing it cannot: that the property survives the record format and
+      # the writer, end to end, as actual bytes on disk.
+      - name: Shards on disk are bit-for-bit reproducible
+        run: |
+          ./build/selfplay --size=5 --heuristic --games=300 --sims=80 --seed=42 \
+            --threads=1 --out=/tmp/one.bin
+          ./build/selfplay --size=5 --heuristic --games=300 --sims=80 --seed=42 \
+            --threads=8 --block=5 --out=/tmp/many.bin
+          cmp /tmp/one.bin /tmp/many.bin
+
+  # The main job configures without ONNX Runtime on purpose, so nothing in the
+  # required test path depends on a 32 MB download. That leaves the ORT-only
+  # targets — selfplay --model= and gate_search — compiled by nothing, free to rot
+  # until someone tries to train. This job exists to catch that.
+  #
+  # It exercises the path with an *untrained* network and relaxed thresholds. The
+  # claim being tested is that the path executes: ORT loads the graph, the encoder
+  # feeds it, the policy decodes back to board indices, PUCT runs, and the fixture
+  # parses. Whether the network plays well is what training/gate.py measures once
+  # there is something worth measuring.
+  onnx-path:
+    name: onnx runtime targets
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch ONNX Runtime
+        run: |
+          curl -sSL --retry 3 -o ort.tgz \
+            https://github.com/microsoft/onnxruntime/releases/download/v1.28.0/onnxruntime-linux-x64-1.28.0.tgz
+          mkdir -p "$HOME/opt"
+          tar xzf ort.tgz -C "$HOME/opt"
+
+      - name: Configure and build
+        run: |
+          cmake -B build -DCMAKE_BUILD_TYPE=Release \
+            -DONNXRUNTIME_ROOT="$HOME/opt/onnxruntime-linux-x64-1.28.0"
+          cmake --build build -j
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Exercise the network path end to end
+        run: |
+          pip install -r training/requirements.txt
+          ./build/gate --out=training/gate_fixture.txt
+          cd training && python export_onnx.py \
+            --board-size 5 --preset tiny --output /tmp/untrained.onnx
+          cd ..
+          ./build/selfplay --size=5 --model=/tmp/untrained.onnx \
+            --games=5 --sims=30 --out=/tmp/net.bin
+          ./build/gate_search --model=/tmp/untrained.onnx --sims=30 \
+            --min-margin=0 --max-gap=1.0
+
+  # The browser is the delivery target, so the WebAssembly build is not optional --
+  # and running the C++ suites under it is the only thing that actually checks the
+  # cross-toolchain determinism the hand-rolled samplers exist for. The golden
+  # fixtures are *written* by these binaries, so byte-comparing them against the
+  # committed copies tests the encoder and the solver directly rather than by proxy.
+  wasm:
+    name: webassembly
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: latest
+
+      - name: Configure and build
+        run: |
+          emcmake cmake -B build-wasm -DCMAKE_BUILD_TYPE=Release
+          cmake --build build-wasm -j
+
+      - name: Suites produce identical check counts under wasm
+        run: |
+          node build-wasm/test_board.js
+          node build-wasm/test_mcts.js
+          node build-wasm/test_alphabeta.js
+          node build-wasm/test_puct.js
+
+      - name: Golden fixtures are byte-identical to the native ones
+        run: |
+          node build-wasm/test_encoding.js /tmp/enc_wasm.txt
+          diff /tmp/enc_wasm.txt training/encoding_fixture.txt
+          node build-wasm/gate.js --out=/tmp/gate_wasm.txt
+          diff /tmp/gate_wasm.txt training/gate_fixture.txt
+
+      # The resumable prepareBatch/submitBatch loop exists because ONNX Runtime Web
+      # is async. None of the C++ suites exercise it, so it gets its own harness.
+      - name: Engine bindings
+        run: node tests/test_wasm_engine.mjs build-wasm/hex_engine.mjs
+
+      - name: Report bundle size
+        run: |
+          ls -l build-wasm/hex_engine.mjs build-wasm/hex_engine.wasm
 
   sanitizers:
     name: asan and ubsan
@@ -66,20 +178,45 @@ jobs:
           ./build-asan/test_mcts
           ./build-asan/test_alphabeta
           ./build-asan/test_puct
+          ./build-asan/test_parallel
           ./build-asan/test_encoding
         env:
           UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
 
-  # Enable once the threaded self-play driver exists.
+  # The parallel driver coordinates workers with std::barrier and shares its block
+  # bookkeeping as plain values, so a race detector is the only thing that checks
+  # the ordering argument rather than taking it on trust.
   #
-  # thread-sanitizer:
-  #   name: tsan
-  #   runs-on: ubuntu-latest
-  #   steps:
-  #     - uses: actions/checkout@v4
-  #     - run: cmake -B build-tsan -DHEX_TSAN=ON -DCMAKE_BUILD_TYPE=Debug
-  #     - run: cmake --build build-tsan -j
-  #     - run: ./build-tsan/selfplay --threads=8 --games=200 --sims=64
+  # Runs in --heuristic mode so the job needs no ONNX Runtime. The network path is
+  # also TSan-clean with one session per worker, but putting a 32 MB download in
+  # front of a race check is a poor trade; the onnx-path job covers that build.
+  thread-sanitizer:
+    name: tsan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -B build-tsan -DHEX_TSAN=ON -DCMAKE_BUILD_TYPE=Debug
+
+      - name: Build
+        run: cmake --build build-tsan --target test_parallel selfplay -j
+
+      # The test target is the primary check: it sweeps thread counts and block
+      # sizes, including block=1 which forces a barrier phase per game, so every
+      # worker but one arrives with nothing done. Running it under TSan covers the
+      # ordering argument and the reproducibility property in one pass.
+      - name: Parallel tests under TSan
+        run: ./build-tsan/test_parallel
+        env:
+          TSAN_OPTIONS: halt_on_error=1:second_deadlock_stack=1
+
+      - name: Self-play driver under TSan
+        run: |
+          ./build-tsan/selfplay --size=5 --heuristic --games=240 --sims=60 \
+            --threads=8 --out=/tmp/tsan.bin
+        env:
+          TSAN_OPTIONS: halt_on_error=1:second_deadlock_stack=1
 
   # Builds the WASM bundle and publishes it to GitHub Pages at
   # https://apurvapm.github.io/hex9/. Requires

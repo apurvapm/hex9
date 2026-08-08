@@ -47,3 +47,12 @@ emsdk/
 .vscode/
 compile_commands.json
 .cache/
+
+# ONNX Runtime Web is fetched by web/fetch_vendor.py, not committed: the wasm
+# binary is 12.9 MB of pinned third-party artifact. Model weights are committed
+# because GitHub Pages serves LFS pointer files rather than content.
+web/vendor/
+build-wasm/
+
+# Training runs: checkpoints, shards and exported models.
+runs/

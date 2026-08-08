@@ -11,6 +11,7 @@
 
 #include "hex/board.hpp"
 #include "hex/encoding.hpp"
+#include "hex/policy_decode.hpp"
 #include "hex/puct.hpp"
 
 namespace hex {
@@ -55,7 +56,7 @@ class OnnxEvaluator {
     const float* logits = outputs[0].GetTensorData<float>();
     const float* value = outputs[1].GetTensorData<float>();
 
-    DecodePolicy(board, logits, out);
+    DecodePolicyLogits<N>(board, logits, out);
     out.value = std::clamp(value[0], -1.0f, 1.0f);
     ++evaluations_;
   }
@@ -63,33 +64,6 @@ class OnnxEvaluator {
   long long evaluations() const { return evaluations_; }
 
  private:
-  // Softmax over legal actions only, then map canonical indices back to board
-  // indices. Masking before the softmax rather than after keeps the illegal
-  // mass out of the normaliser instead of merely zeroing it afterwards.
-  void DecodePolicy(const Board<N>& board, const float* logits,
-                    Evaluation<N>& out) const {
-    out.priors.fill(0.0f);
-    const bool transpose = Enc::NeedsTranspose(board);
-
-    std::vector<int> actions(board.LegalMoves(),
-                             board.LegalMoves() + board.NumEmpty());
-    if (board.CanSwap()) actions.push_back(Board<N>::kSwapMove);
-
-    float best = -1e30f;
-    for (const int action : actions)
-      best = std::max(best, logits[Enc::Canonicalise(transpose, action)]);
-
-    float total = 0.0f;
-    for (const int action : actions) {
-      const float weight =
-          std::exp(logits[Enc::Canonicalise(transpose, action)] - best);
-      out.priors[action] = weight;
-      total += weight;
-    }
-    if (total > 0.0f)
-      for (const int action : actions) out.priors[action] /= total;
-  }
-
   Ort::Env environment_;
   Ort::MemoryInfo memory_info_;
   std::unique_ptr<Ort::Session> session_;
