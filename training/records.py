@@ -19,7 +19,14 @@ from typing import Iterator
 
 import numpy as np
 
-from encoding import BLUE, EMPTY, NEIGHBOUR_OFFSETS, RED, Position, encode
+from encoding import (
+    BLUE,
+    NEIGHBOUR_OFFSETS,
+    RED,
+    Position,
+    encode,
+    encode_policy_target,
+)
 
 MAGIC = b"HEX9"
 VERSION = 1
@@ -110,21 +117,15 @@ def samples(size: int, game: Game, verify: bool = True) -> Iterator[
     perspective — the sign is a property of the position, not of the colours.
     """
     position = Position(size)
-    policy_width = size * size + 1
 
     for ply, move in enumerate(game.moves):
         planes = encode(position)
 
-        target = np.zeros(policy_width, dtype=np.float32)
-        total = float(sum(count for _, count in game.visits[ply]))
-        if total > 0.0:
-            transpose = position.to_play == BLUE
-            for action, count in game.visits[ply]:
-                index = action
-                if transpose and action != size * size:
-                    row, col = divmod(action, size)
-                    index = col * size + row
-                target[index] = count / total
+        # Delegated rather than reimplemented: the canonicalisation that maps
+        # visit counts onto the network's action space is the same mapping the
+        # golden fixture pins, and a second copy of it here is exactly the drift
+        # this module claims not to have.
+        target = encode_policy_target(position, dict(game.visits[ply]))
 
         mover_is_red = position.to_play == RED
         value = 1.0 if (mover_is_red == (game.winner > 0)) else -1.0

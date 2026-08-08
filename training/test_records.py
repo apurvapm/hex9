@@ -118,23 +118,54 @@ def test_policy_mass_lands_only_on_legal_actions(shard):
 
 
 def test_value_target_flips_with_the_mover(shard):
-    """Consecutive positions have opposite movers, so their value targets must
-    be opposite too — except across a swap, which hands the move back."""
+    """Consecutive recorded positions always have opposite movers, so their
+    value targets must be opposite too — across a swap as much as anywhere else.
+
+    Swap is not an exception, and asserting that is better than excusing it.
+    Blue's move *is* the swap, so the recorded movers still run Red, Blue, Red:
+    the position at ply 1 has Blue to move and the position at ply 2 has Red.
+    Carving the swap ply out would leave the sign convention unchecked at
+    precisely the ply most likely to get it wrong.
+    """
     size, games = read_shard(shard)
-    for game in games[:10]:
+    swap_plies_checked = 0
+    for game in games:
         values = [value for _, _, value in samples(size, game, verify=False)]
-        position = Position(size)
         for ply in range(len(game.moves) - 1):
-            was_swap = game.moves[ply] == size * size
-            if not was_swap:
-                assert values[ply] == -values[ply + 1], (
-                    "value target should alternate between plies"
-                )
-            position.play(game.moves[ply])
+            assert values[ply] == -values[ply + 1], (
+                f"value target failed to alternate across ply {ply}"
+            )
+            if game.moves[ply] == size * size:
+                swap_plies_checked += 1
+
+    if swap_plies_checked == 0:
+        pytest.skip("no swap appeared in this shard, so that ply went unchecked")
+
+
+def test_final_position_is_always_a_win_for_its_mover(shard):
+    """The last recorded position is the one the winning move was played from.
+
+    This pins the value convention without a solver, a fixture, or a trained
+    network: were the sign inverted, every game in the shard would report -1
+    here. It is the cheapest available check on the most expensive bug in the
+    project, which is why it runs over every game rather than a sample.
+    """
+    size, games = read_shard(shard)
+    for game in games:
+        values = [value for _, _, value in samples(size, game, verify=False)]
+        assert values[-1] == 1.0, (
+            "the mover at the final recorded position played the winning move, "
+            "so its value target must be +1"
+        )
 
 
 def test_swap_positions_keep_the_mover(shard):
-    """After a swap it is Red's move again, so the sign does not flip."""
+    """Blue swaps and Red moves next, at ply 2 rather than ply 3.
+
+    The stone count does not advance, which is what makes plane 2 of the encoding
+    necessary. The mover still alternates, so value targets alternate here too --
+    see test_value_target_flips_with_the_mover.
+    """
     size, games = read_shard(shard)
     swap_action = size * size
     seen_swap = False
