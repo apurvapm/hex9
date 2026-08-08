@@ -1,12 +1,14 @@
 // Generates self-play games and writes them as training records.
 //
 //   ./selfplay --size=5 --model=tiny.onnx --games=200 --sims=200 --out=shard.bin
+//   ./selfplay --size=9 --model=hex9.onnx --games=2000 --threads=15 --out=shard.bin
 //   ./selfplay --size=5 --heuristic --games=50 --out=shard.bin
 //
 // The heuristic mode needs no model and exists so the pipeline can be exercised
 // before a network is trained, and so the record format can be tested in CI
 // without an ONNX Runtime dependency.
 
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -15,6 +17,7 @@
 
 #include "hex/alphabeta.hpp"
 #include "hex/board.hpp"
+#include "hex/parallel_selfplay.hpp"
 #include "hex/puct.hpp"
 #include "hex/selfplay_record.hpp"
 
@@ -40,6 +43,14 @@ struct Options {
   bool heuristic = false;
   std::string model;
   std::string output = "shard.bin";
+  // Defaults to one thread so the common invocation stays deterministic without
+  // anyone having to ask for it. Parallelism is opt-in.
+  int threads = 1;
+  int block = 0;
+  // ORT threads *inside* one inference call, as opposed to workers. Exists so the
+  // reproducibility hazard can be tested rather than asserted; the measured
+  // workers-versus-session-threads result argues against ever raising it.
+  int intra_threads = 1;
 };
 
 // Stand-in for the network: uniform priors and a value from the
@@ -57,86 +68,70 @@ struct HeuristicEvaluator {
   }
 };
 
-template <int N, typename Evaluator>
-int PlayGames(const Options& options, Evaluator&& evaluate) {
+// MakeEvaluator is a factory, not an evaluator: the parallel driver calls it once
+// per worker so each thread owns its own ORT session. Passing a single evaluator
+// would share one session across threads, which is the arrangement the design
+// notes want measured rather than assumed.
+template <int N, typename MakeEvaluator>
+int PlayGames(const Options& options, MakeEvaluator make_evaluator) {
   hex::RecordWriter writer(options.output, N);
   if (!writer.ok()) {
     std::printf("could not open %s for writing\n", options.output.c_str());
     return 1;
   }
 
-  long long total_plies = 0;
-  int red_wins = 0;
-  int swaps = 0;
+  const hex::ParallelConfig config{
+      .threads = options.threads,
+      .games = options.games,
+      .simulations = options.simulations,
+      .c_puct = options.c_puct,
+      .dirichlet_alpha = options.dirichlet_alpha,
+      .dirichlet_weight = options.dirichlet_weight,
+      .temperature_moves = options.temperature_moves,
+      .seed = options.seed,
+      .allow_swap = options.allow_swap,
+      .block = options.block,
+  };
 
-  for (int game = 0; game < options.games; ++game) {
-    hex::Board<N> board;
-    hex::SelfPlayRecord record;
-
-    // Seeding per game rather than from one shared stream keeps every game
-    // independently reproducible, which is what makes a threaded run
-    // debuggable later.
-    const std::uint64_t game_seed =
-        options.seed * 1000003ULL + static_cast<std::uint64_t>(game);
-    hex::Puct<N> search(typename hex::Puct<N>::Config{
-        options.simulations, options.c_puct, options.dirichlet_alpha,
-        options.dirichlet_weight, game_seed, options.allow_swap});
-
-    while (!board.IsTerminal()) {
-      const auto result = search.Search(board, evaluate);
-
-      std::vector<std::pair<int, std::uint16_t>> entries;
-      for (const auto& [action, count] : result.visits)
-        if (count > 0)
-          entries.emplace_back(action, static_cast<std::uint16_t>(count));
-
-      const float temperature =
-          board.MoveCount() < options.temperature_moves ? 1.0f : 0.0f;
-      const int move = search.SampleMove(result, temperature);
-
-      record.moves.push_back(move);
-      record.visits.push_back(std::move(entries));
-
-      if (move == hex::Board<N>::kSwapMove) {
-        board.PlaySwap();
-        ++swaps;
-      } else {
-        board.Play(move);
-      }
-    }
-
-    record.winner = board.Winner() == hex::Cell::kRed ? 1 : -1;
-    if (record.winner > 0) ++red_wins;
-    total_plies += static_cast<long long>(record.moves.size());
-    writer.Write(record);
-
-    if ((game + 1) % 50 == 0)
-      std::printf("  %d/%d games\n", game + 1, options.games);
-  }
+  const auto started = std::chrono::steady_clock::now();
+  const hex::ParallelStats stats = hex::RunParallelSelfPlay<N>(
+      config, make_evaluator,
+      [&writer](hex::SelfPlayRecord& record) { writer.Write(record); });
+  const double elapsed =
+      std::chrono::duration<double>(std::chrono::steady_clock::now() - started)
+          .count();
 
   writer.Close();
   std::printf("wrote %u games to %s\n", writer.games(), options.output.c_str());
+  std::printf("  threads     : %d\n", options.threads);
   std::printf("  mean length : %.1f plies\n",
-              static_cast<double>(total_plies) / options.games);
-  std::printf("  red wins    : %d/%d (%.0f%%)\n", red_wins, options.games,
-              100.0 * red_wins / options.games);
-  std::printf("  swaps taken : %d\n", swaps);
+              static_cast<double>(stats.total_plies) / stats.games);
+  std::printf("  red wins    : %d/%d (%.0f%%)\n", stats.red_wins, stats.games,
+              100.0 * stats.red_wins / stats.games);
+  std::printf("  swaps taken : %d\n", stats.swaps);
+  std::printf("  elapsed     : %.2fs\n", elapsed);
+  // Reported per run because these are the numbers the phase 3 scaling curve is
+  // built from; deriving them later from a wall-clock guess would not do.
+  std::printf("  throughput  : %.1f games/sec, %.0f moves/sec\n",
+              stats.games / elapsed,
+              static_cast<double>(stats.total_plies) / elapsed);
   return 0;
 }
 
 template <int N>
 int Run(const Options& options) {
-  if (options.heuristic) {
-    HeuristicEvaluator<N> evaluator;
-    return PlayGames<N>(options, evaluator);
-  }
+  if (options.heuristic)
+    return PlayGames<N>(options, [] { return HeuristicEvaluator<N>{}; });
 #ifdef HEX_WITH_ONNX
   if (options.model.empty()) {
     std::printf("supply --model=<path.onnx> or pass --heuristic\n");
     return 1;
   }
-  hex::OnnxEvaluator<N> evaluator(options.model);
-  return PlayGames<N>(options, evaluator);
+  // One session per worker, each single-threaded. Returned as a prvalue so it is
+  // constructed in place in the worker rather than moved into it.
+  return PlayGames<N>(options, [&options] {
+    return hex::OnnxEvaluator<N>(options.model, options.intra_threads);
+  });
 #else
   std::printf("built without ONNX Runtime; pass --heuristic\n");
   return 1;
@@ -169,6 +164,12 @@ int main(int argc, char** argv) {
       options.dirichlet_weight = std::strtof(value.c_str(), nullptr);
     } else if (MatchFlag(argv[i], "--temp-moves", value)) {
       options.temperature_moves = std::atoi(value.c_str());
+    } else if (MatchFlag(argv[i], "--threads", value)) {
+      options.threads = std::atoi(value.c_str());
+    } else if (MatchFlag(argv[i], "--block", value)) {
+      options.block = std::atoi(value.c_str());
+    } else if (MatchFlag(argv[i], "--intra-threads", value)) {
+      options.intra_threads = std::atoi(value.c_str());
     } else if (MatchFlag(argv[i], "--seed", value)) {
       options.seed = std::strtoull(value.c_str(), nullptr, 10);
     } else if (MatchFlag(argv[i], "--model", value)) {
